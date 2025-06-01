@@ -14,7 +14,7 @@ pub struct Job {
     dependencies: Vec<JobId>,
     pub(crate) manager: super::Manager,
     task: Arc<dyn FnOnce() -> ()>,
-    in_progress: bool,
+    pub(crate) in_progress: bool,
 }
 
 impl Job {
