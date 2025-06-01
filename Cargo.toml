@@ -11,6 +11,7 @@ keywords = ["gamedev"]
 
 [dependencies]
 generational-arena = "0.2.9"
+num_cpus = "1.17.0"
 parking_lot = "0.12.4"
 
 [lib]

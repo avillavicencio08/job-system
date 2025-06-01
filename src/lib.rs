@@ -2,19 +2,96 @@
 // A Custom Job System for a Future Project of Mine
 // Copyright (C) 2025 A. Villavicencio
 
-use std::{sync::Arc, thread::Thread};
-use parking_lot::RwLock;
+use std::{
+    ops::Deref, sync::{Arc, mpsc}, thread::{self, Thread}
+};
+use parking_lot::{RwLock};
 use generational_arena::Arena;
+use num_cpus;
 
 pub mod graph;
 
 struct ManagerInner {
     cores: u8,
     jobs: Arena<graph::Job>,
-    threads: Vec<(Thread, graph::JobId)>
+    threads: Vec<(Thread, mpsc::Sender<()>)>,
+    cancelled: bool,
 }
 
 #[derive(Clone)]
 pub struct Manager {
     inner: Arc<RwLock<ManagerInner>>,
+}
+
+impl Manager {
+    pub fn new(threads: u8) {
+        let mut ret = Manager { inner: Arc::new(RwLock::new({}))};
+        let mut man = (*ret.inner).write();
+        
+        man.cores = if threads == 0 {
+            num_cpus::get_physical() as u8
+        } else {
+            threads.max(num_cpus::get() * 10)
+        };
+
+        for i in 0..man.cores {
+            let (tx, rx) = mpsc::channel::<()>();
+            let task_func = || {
+                let idx = i;
+                let manager = ret.clone();
+                let comms = rx;
+
+                'a: while true {
+                    // the manager will send when a job is available
+                    // otherwise, if it is dropped, the manager is dead
+                    // and we should die.
+                    match comms.recv() {
+                        Err(_) => break 'a,
+                        _ => {},
+                    }
+
+                    // while true is a misnomer, should be while job avalible
+                    'b: while true {
+                        let m = (*manager.inner).upgradable_read();
+                        let jid: Option<graph::JobId> = None;
+
+                        // first, check if a job is available
+                        for (id, j) in m.jobs.iter() {
+                            if j.dependency_check() {
+                                // if so, take it
+                                jid = Some(id);
+                                break;
+                            }
+                        }
+
+                        match jid {
+                            Some(jobid) => {
+                                // now, we claim our cash prize
+                                let wman = m.upgrade();
+                                let job = wman[jobid].clone();
+                                
+                                wman[jobid].in_progress = true;
+                                // so we dont screw everything up
+                                drop(wman);
+                                // do the damn thing
+                                job.execute();
+
+                                // and finish the job
+                                wman = (*manager.inner).write();
+                                wman.jobs.remove(jobid);
+                            },
+                            None => break 'b,
+                        }
+
+                        // so we dont have to go full like try_recv
+                        if (*manager.inner).read().cancelled {
+                            break 'a;
+                        }
+                    }
+                }
+            };
+
+            man.threads.push((*thread::spawn(task_func).thread(), tx));
+        }
+    }
 }
