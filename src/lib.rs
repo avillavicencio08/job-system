@@ -94,4 +94,19 @@ impl Manager {
             man.threads.push((*thread::spawn(task_func).thread(), tx));
         }
     }
+
+    fn register(&mut self, job: &mut graph::Job) -> JobId {
+        let mut man = (*self.inner).write();
+        let j = man.jobs.insert(job.clone());
+
+        man.jobs[j].id = j;
+        man.jobs[j].manager = self.clone();
+        man.threads.iter().for_each(|(_, tx)| _ = tx.send(()));
+
+        drop(man);
+
+        *job = (*self.inner).read().jobs[j].clone();
+
+        j
+    }
 }
