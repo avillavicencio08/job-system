@@ -17,9 +17,10 @@ use graph::JobId;
 
 struct ManagerInner {
     cores: u8,
+    cancelled: bool,
+    name: String,
     jobs: Arena<graph::Job>, 
     threads: Vec<(JoinHandle<()>, mpsc::Sender<()>)>,
-    cancelled: bool,
 }
 
 #[derive(Clone)]
@@ -79,7 +80,7 @@ fn task_handler(man: Manager, comms: mpsc::Receiver<()>) {
 }
 
 impl Manager {
-    pub fn new(threads: u8) {
+    pub fn new(threads: u8, name: Option<String>) {
         let mut ret = Manager { inner: Arc::new(RwLock::new({}))};
         let mut man = (*ret.inner).write();
         
@@ -89,15 +90,22 @@ impl Manager {
             threads.max(num_cpus::get() * 10)
         };
 
+        man.name = if let Some(nomen) = name {
+            nomen
+        } else {
+            "Unnamed Manager".to_string()
+        };
+
         for i in 0..man.cores {
             let (tx, rx) = mpsc::channel::<()>();
             let taskfn= move || task_handler(ret.clone(), rx);
+            let task = thread::Builder::new().name(format!("{} Thread {}", man.name, i));
 
-            man.threads.push((thread::spawn(taskfn), tx));
+            man.threads.push((task.spawn(taskfn), tx));
         }
     }
 
-    pub fn register(&mut self, job: &mut graph::Job) -> Result<JobId, ()> {
+    pub fn register(&mut self, job: graph::Job) -> Result<JobId, ()> {
         let mut man = (*self.inner).write();
         let j;
 
@@ -105,12 +113,12 @@ impl Manager {
             return Err(());
         }
 
-        j = man.jobs.insert(job.clone());
+        j = man.jobs.insert(job);
 
         man.jobs[j].id = j;
         man.jobs[j].manager = self.clone();
 
-        for (t, tx) in man.threads.iter_mut() {
+        for (i, (t, tx)) in man.threads.iter_mut().enumerate() {
             match tx.send(()) {
                 Ok(_) => {},
 
@@ -120,7 +128,9 @@ impl Manager {
                     let taskfn = move || task_handler(self.clone(), rx);
 
                     (*tx, rx) = mpsc::channel::<()>();
-                    *t = thread::spawn(taskfn);
+                    *t = thread::Builder::new()
+                        .name(format!("{} Thread {}", man.name, i))
+                        .spawn(taskfn).unwrap();
 
                     let _ = tx.send(());
                 },
@@ -128,8 +138,6 @@ impl Manager {
         }
 
         drop(man);
-
-        *job = (*self.inner).read().jobs[j].clone();
 
         Ok(j)
     }
